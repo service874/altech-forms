@@ -552,6 +552,7 @@
   }
   .photo-upload-btn:active { background: #e4e9f4; }
   .photo-btn-row { display: flex; gap: 10px; }
+  .f-input.f-missing { border-color: var(--red); box-shadow: 0 0 0 3px rgba(192,57,43,0.15); }
   .photo-btn-row .photo-upload-btn { flex: 1; padding: 14px 8px; font-size: 14px; gap: 6px; }
   .photo-grid {
     display: grid;
@@ -861,7 +862,7 @@
 
     <div class="f-section">
       <div class="f-section-title">Site Information</div>
-      <div class="f-row"><label class="f-label">Site Name</label><input class="f-input" id="s-site-name" placeholder="e.g. Westfield Marion"></div>
+      <div class="f-row"><label class="f-label">Site Name</label><input class="f-input" id="s-site-name" placeholder="e.g. Westfield Marion" list="s-site-list" autocomplete="off"><datalist id="s-site-list"></datalist></div>
       <div class="f-row"><label class="f-label">Customer</label><input class="f-input" id="s-customer" placeholder="Customer / company name"></div>
       <div class="f-row"><label class="f-label">Address</label><input class="f-input" id="s-address" placeholder="Site address"></div>
     </div>
@@ -965,7 +966,7 @@
           </select>
         </div>
       </div>
-      <div class="f-row"><label class="f-label">Site Name</label><input class="f-input" id="w-site-name" placeholder="e.g. Woolworths Noarlunga"></div>
+      <div class="f-row"><label class="f-label">Site Name</label><input class="f-input" id="w-site-name" placeholder="e.g. Woolworths Noarlunga" list="w-site-list" autocomplete="off"><datalist id="w-site-list"></datalist></div>
       <div class="f-row"><label class="f-label">Site Address</label><input class="f-input" id="w-address" placeholder="Site address"></div>
       <div class="f-row-2">
         <div><label class="f-label">Onsite Location</label><input class="f-input" id="w-location" placeholder="e.g. Rear Entry"></div>
@@ -1056,7 +1057,7 @@
         <label class="f-label">Serial Number</label>
         <input class="f-input" id="c-serial" placeholder="Unit serial number">
       </div>
-      <div class="f-row"><label class="f-label">Site Name</label><input class="f-input" id="c-site-name" placeholder="Site name"></div>
+      <div class="f-row"><label class="f-label">Site Name</label><input class="f-input" id="c-site-name" placeholder="Site name" list="c-site-list" autocomplete="off"><datalist id="c-site-list"></datalist></div>
       <div class="f-row"><label class="f-label">Site Address</label><input class="f-input" id="c-address" placeholder="Site address"></div>
       <div class="f-row-2">
         <div><label class="f-label">On-site Location</label><input class="f-input" id="c-location" placeholder="e.g. Emergency Exit A"></div>
@@ -1355,6 +1356,7 @@ function initSig(canvasId) {
     const ph = canvas.parentElement.querySelector('.sig-label-inner');
     if (ph) ph.style.display = 'none';
   });
+  pad.addEventListener('endStroke', queueDraftSave);
 
   sigPads[canvasId] = pad;
 }
@@ -1397,6 +1399,7 @@ function isSigEmpty(canvasId) {
 // MULTI-DOOR (Service Sheet)
 // ══════════════════════════════════════════
 let doorCount = 1;
+let nextDoorIdx = 1; // panel ids are never reused, so removing a door can't clash with a new one
 let activeDoor = 0;
 const doorData = [{}]; // array of door data objects
 
@@ -1443,6 +1446,7 @@ function doorPanelHTML(idx) {
           <option>12V 7Ah SLA</option>
           <option>12V 1.3Ah SLA</option>
           <option>12V 1.7Ah SLA</option>
+          <option>12V 3.3Ah SLA</option>
           <option>Besam Lithium Pack</option>
           <option>Other</option>
         </select>
@@ -1504,7 +1508,7 @@ function initDoors() {
 
 function addDoor() {
   if (doorCount >= 12) { showToast('Maximum 12 doors per job', true); return; }
-  const idx = doorCount;
+  const idx = nextDoorIdx++;
   doorCount++;
   doorData.push({});
 
@@ -1514,7 +1518,7 @@ function addDoor() {
   const newTab = document.createElement('button');
   newTab.className = 'door-tab';
   newTab.id = `door-tab-${idx}`;
-  newTab.textContent = `Door ${idx + 1}`;
+  newTab.textContent = `Door ${doorCount}`;
   newTab.onclick = () => switchDoor(idx);
   tabBar.insertBefore(newTab, addBtn);
 
@@ -1529,6 +1533,7 @@ function addDoor() {
   buildRating(`d${idx}-rating`, `d${idx}r`);
   addPartsRow(`d${idx}-parts`);
 
+  renumberDoors();
   switchDoor(idx);
 }
 
@@ -1537,8 +1542,19 @@ function removeDoor(idx) {
   document.getElementById(`door-tab-${idx}`).remove();
   document.getElementById(`door-panel-${idx}`).remove();
   doorCount--;
-  doorData.splice(idx, 1);
+  renumberDoors();
   switchDoor(0);
+}
+
+// Keep tab labels as Door 1, 2, 3… after a door is removed
+function renumberDoors() {
+  document.querySelectorAll('.door-panel').forEach((panel, pos) => {
+    const idx = panel.id.replace('door-panel-', '');
+    const tab = document.getElementById(`door-tab-${idx}`);
+    if (tab) tab.textContent = `Door ${pos + 1}`;
+    const rm = panel.querySelector('.door-remove-btn');
+    if (rm) rm.textContent = `✕ Remove Door ${pos + 1}`;
+  });
 }
 
 function switchDoor(idx) {
@@ -1559,9 +1575,8 @@ function toggleDoorPF(idx, val) {
 
 function getDoorData() {
   const doors = [];
-  for (let i = 0; i < doorCount; i++) {
-    const panel = document.getElementById(`door-panel-${i}`);
-    if (!panel) continue;
+  document.querySelectorAll('.door-panel').forEach((panel, pos) => {
+    const i = Number(panel.id.replace('door-panel-', ''));
     const parts = [];
     panel.querySelectorAll('tbody tr').forEach(row => {
       const cells = row.querySelectorAll('input');
@@ -1569,7 +1584,7 @@ function getDoorData() {
       if (vals.some(v => v)) parts.push(vals);
     });
     doors.push({
-      num: i + 1,
+      num: pos + 1,
       location: dv(`d${i}-location`),
       make: dv(`d${i}-make`),
       serial: dv(`d${i}-serial`),
@@ -1583,7 +1598,7 @@ function getDoorData() {
       notes: dv(`d${i}-notes`),
       parts
     });
-  }
+  });
   return doors;
 }
 
@@ -1644,6 +1659,7 @@ function renderPhotoGrid(prefix) {
       <button class="photo-remove" onclick="removePhoto('${prefix}',${i})">✕</button>
     </div>`).join('');
   count.textContent = photos.length > 0 ? `${photos.length} / ${MAX_PHOTOS} photos` : '';
+  queueDraftSave();
 }
 
 function removePhoto(prefix, idx) {
@@ -1665,6 +1681,7 @@ function onStaffSelect() {
   } else {
     otherWrap.style.display = 'none';
     currentStaff = sel.value;
+    store(STAFF_KEY, currentStaff ? { name: currentStaff } : null);
   }
   sel.classList.toggle('selected', !!currentStaff);
   const cards = document.querySelectorAll('.form-card');
@@ -1673,6 +1690,7 @@ function onStaffSelect() {
 
 function onOtherName() {
   currentStaff = document.getElementById('staff-other-input').value.trim();
+  store(STAFF_KEY, currentStaff ? { other: currentStaff } : null);
   const cards = document.querySelectorAll('.form-card');
   cards.forEach(c => c.classList.toggle('disabled-card', !currentStaff));
 }
@@ -1700,10 +1718,17 @@ function openForm(formType) {
     if (formType === 'service' && document.getElementById('door-panels').children.length === 0) {
       initDoors();
     }
+    // Offer to restore an unfinished form (once per visit)
+    if (!draftChecked[formType]) {
+      draftChecked[formType] = true;
+      restoreDraft(formType);
+    }
   }, 150);
 }
 
 function goHome() {
+  // After a successful send, start again with blank forms
+  if (formSent) { location.reload(); return; }
   showScreen('screen-home');
 }
 
@@ -1925,6 +1950,40 @@ function pdfTextBlock(doc, y, label, text) {
   return y + 4;
 }
 
+// Parts table: long descriptions wrap onto extra lines instead of overlapping
+const PARTS_COLS = [
+  { h: 'Serial #',    x: 16,  w: 36 },
+  { h: 'Description', x: 54,  w: 94 },
+  { h: 'Qty',         x: 152, w: 15 },
+  { h: 'Faulty',      x: 170, w: 24 },
+];
+function pdfPartsHeader(doc, y) {
+  doc.setFillColor(240, 243, 248);
+  doc.rect(14, y, 182, 6, 'F');
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(7);
+  doc.setTextColor(...GREY);
+  PARTS_COLS.forEach(c => doc.text(c.h, c.x, y + 4.2));
+  return y + 7;
+}
+function pdfPartsTable(doc, y, rows) {
+  y = ensureSpace(doc, y, 13);
+  y = pdfPartsHeader(doc, y);
+  rows.forEach(vals => {
+    doc.setFont('helvetica','normal');
+    doc.setFontSize(8);
+    const cells = PARTS_COLS.map((c, i) => doc.splitTextToSize(vals[i] || '—', c.w));
+    const rowH = Math.max(6, Math.max(...cells.map(l => l.length)) * 3.6 + 2.4);
+    if (y + rowH > PAGE_BOTTOM) { doc.addPage(); y = pdfPartsHeader(doc, 20); }
+    doc.setFont('helvetica','normal');
+    doc.setFontSize(8);
+    doc.setTextColor(...BLACK);
+    cells.forEach((lines, i) => doc.text(lines, PARTS_COLS[i].x, y + 4, { lineHeightFactor: 1.275 }));
+    y += rowH;
+  });
+  return y + 3;
+}
+
 function pdfSignatureRow(doc, y, techSigId, techName, custSigId, custName, date) {
   if (y > 240) { doc.addPage(); y = 20; }
   doc.setFillColor(...LIGHT);
@@ -2020,22 +2079,7 @@ function buildServicePDF() {
     y = pdfTextBlock(doc, y, '', door.notes);
     if (door.parts.length > 0) {
       y = pdfSectionTitle(doc, y, 'Parts Used');
-      doc.setFillColor(240, 243, 248);
-      doc.rect(14, y, 182, 6, 'F');
-      doc.setFont('helvetica','bold');
-      doc.setFontSize(7);
-      doc.setTextColor(...GREY);
-      ['Serial #', 'Description', 'Qty', 'Faulty'].forEach((h, i) => doc.text(h, 16 + i * 45, y + 4.2));
-      y += 7;
-      door.parts.forEach(vals => {
-        y = ensureSpace(doc, y, 6);
-        doc.setFont('helvetica','normal');
-        doc.setFontSize(8);
-        doc.setTextColor(...BLACK);
-        vals.forEach((val, i) => doc.text(val || '—', 16 + i * 45, y + 4));
-        y += 6;
-      });
-      y += 3;
+      y = pdfPartsTable(doc, y, door.parts);
     }
   });
 
@@ -2083,35 +2127,16 @@ function buildWorksheetPDF() {
   y = pdfTextBlock(doc, y, '', v('w-report'));
 
   y = pdfSectionTitle(doc, y, 'Parts Used & Quantity');
-  const wTbody = document.getElementById('w-parts-body');
-  if (wTbody) {
-    const wRows = wTbody.querySelectorAll('tr');
-    let wHasParts = false;
-    wRows.forEach(row => {
-      const cells = row.querySelectorAll('input');
-      const vals = [...cells].map(c => c.value.trim());
-      if (vals.some(vv => vv)) {
-        if (!wHasParts) {
-          doc.setFillColor(240, 243, 248);
-          doc.rect(14, y, 182, 6, 'F');
-          doc.setFont('helvetica','bold');
-          doc.setFontSize(7);
-          doc.setTextColor(...GREY);
-          ['Serial #', 'Description', 'Qty', 'Faulty'].forEach((h, i) => doc.text(h, 16 + i * 45, y + 4.2));
-          y += 7;
-          wHasParts = true;
-        }
-        y = ensureSpace(doc, y, 6);
-        doc.setFont('helvetica','normal');
-        doc.setFontSize(8);
-        doc.setTextColor(...BLACK);
-        vals.forEach((val, i) => doc.text(val || '—', 16 + i * 45, y + 4));
-        y += 6;
-      }
-    });
-    if (!wHasParts) { doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(...GREY); doc.text('No parts recorded', 16, y + 5); y += 9; }
+  const wParts = [...document.querySelectorAll('#w-parts-body tr')]
+    .map(row => [...row.querySelectorAll('input')].map(c => c.value.trim()))
+    .filter(vals => vals.some(vv => vv));
+  if (wParts.length) {
+    y = pdfPartsTable(doc, y, wParts);
+  } else {
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(...GREY);
+    doc.text('No parts recorded', 16, y + 5);
+    y += 12;
   }
-  y += 3;
 
   y = pdfSectionTitle(doc, y, 'Quote & Times');
   if (state['w-quote'] === 'yes') {
@@ -2228,6 +2253,7 @@ const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwmmtW0DEcIlpgZ
 // SUBMIT
 // ══════════════════════════════════════════
 async function submitForm(formType) {
+  if (!checkBeforeSubmit(formType)) return;
   const btn = document.getElementById(`submit-${formType}`);
   btn.classList.add('loading');
   btn.textContent = '⏳ Generating PDF…';
@@ -2313,6 +2339,12 @@ async function submitForm(formType) {
       <span style="color:#27ae60;">✓ PDF saved to this device</span>
       ${driveUrl ? `<br><a href="${driveUrl}" target="_blank" style="color:#1a2a4a;font-size:13px;">📁 Open in Google Drive →</a>` : ''}
     `;
+    if (emailSent) {
+      // Sent safely, so the saved draft is no longer needed
+      clearTimeout(draftTimer);
+      store(DRAFT_PREFIX + formType, null);
+      formSent = true;
+    }
     showScreen('screen-success');
 
   } catch (e) {
@@ -2323,6 +2355,226 @@ async function submitForm(formType) {
   btn.classList.remove('loading');
   btn.textContent = '📤 Submit & Send PDF';
 }
+
+// ══════════════════════════════════════════
+// CHECKS BEFORE SUBMITTING
+// ══════════════════════════════════════════
+const FORM_NAMES = { service: 'Service Sheet', worksheet: 'Worksheet', commissioning: 'Commissioning Checklist' };
+const SITE_FIELDS = { service: 's-site-name', worksheet: 'w-site-name', commissioning: 'c-site-name' };
+const SIG_FIELDS = {
+  service:       ['sig-tech-service', 'sig-cust-service'],
+  worksheet:     ['sig-tech-worksheet', 'sig-cust-worksheet'],
+  commissioning: ['sig-tech-comm', 'sig-cust-comm'],
+};
+
+function checkBeforeSubmit(formType) {
+  // Site name is needed to file the PDF in the right Drive folder
+  const site = document.getElementById(SITE_FIELDS[formType]);
+  if (!site.value.trim()) {
+    site.classList.add('f-missing');
+    site.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    site.focus();
+    showToast('Please enter the site name', true);
+    return false;
+  }
+  // Signatures can be skipped (e.g. no customer on site), but ask first
+  const [techSig, custSig] = SIG_FIELDS[formType];
+  const missing = [];
+  if (isSigEmpty(techSig)) missing.push('technician signature');
+  if (isSigEmpty(custSig)) missing.push('customer signature');
+  if (missing.length) {
+    const what = missing.join(' and ');
+    return confirm(`The ${what} ${missing.length > 1 ? 'are' : 'is'} missing.\n\nSubmit anyway?`);
+  }
+  return true;
+}
+document.addEventListener('input', e => {
+  if (e.target.classList && e.target.classList.contains('f-missing')) e.target.classList.remove('f-missing');
+});
+
+// ══════════════════════════════════════════
+// SAVED ON THIS PHONE (technician, drafts, site list)
+// ══════════════════════════════════════════
+const STAFF_KEY = 'altech-staff';
+const SITES_KEY = 'altech-sites';
+const DRAFT_PREFIX = 'altech-draft-';
+const DRAFT_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // drafts older than a week are dropped
+const draftChecked = {};
+let draftTimer = null;
+let formSent = false;
+
+function store(key, val) {
+  try {
+    if (val === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(val));
+    return true;
+  } catch (e) { return false; }
+}
+function load(key) {
+  try { return JSON.parse(localStorage.getItem(key)); } catch (e) { return null; }
+}
+
+// Pick the technician who used this phone last
+function restoreStaff() {
+  const saved = load(STAFF_KEY);
+  if (!saved) return;
+  const sel = document.getElementById('staff-select');
+  if (saved.other) {
+    sel.value = 'other';
+    onStaffSelect();
+    document.getElementById('staff-other-input').value = saved.other;
+    onOtherName();
+  } else if ([...sel.options].some(o => o.value === saved.name)) {
+    sel.value = saved.name;
+    onStaffSelect();
+  }
+}
+
+// ── Drafts: each form is saved as you type, so nothing is lost if the
+//    phone locks, the page reloads or someone taps Back ──
+const PHOTO_PREFIX = { service: 's', worksheet: 'w', commissioning: 'c' };
+
+// Door panels keep their original ids after a door is removed, so drafts
+// store them by position (Door 1, 2, 3…) instead
+function doorPositions() {
+  const map = {};
+  document.querySelectorAll('.door-panel').forEach((p, pos) => { map[p.id.replace('door-panel-', '')] = pos; });
+  return map;
+}
+function draftKey(id, map) {
+  return id.replace(/^d(\d+)(?=[-a-z_])/, (m, n) => 'd' + (n in map ? map[n] : n));
+}
+function formButtons(screen) {
+  return [...screen.querySelectorAll('button')].filter(b => !b.closest('.photo-grid') && !b.classList.contains('door-tab'));
+}
+
+function saveDraft() {
+  if (!currentForm) return;
+  const screen = document.getElementById('screen-' + currentForm);
+  if (!screen || !screen.classList.contains('active')) return;
+  const map = doorPositions();
+
+  const fields = {};
+  screen.querySelectorAll('input[id], textarea[id], select[id]').forEach(el => {
+    if (el.type !== 'file' && el.value) fields[draftKey(el.id, map)] = el.value;
+  });
+  const parts = {};
+  let hasParts = false;
+  screen.querySelectorAll('tbody[id]').forEach(tb => {
+    const rows = [...tb.querySelectorAll('tr')].map(tr => [...tr.querySelectorAll('input')].map(i => i.value));
+    if (rows.some(r => r.some(x => x))) hasParts = true;
+    parts[draftKey(tb.id, map)] = rows;
+  });
+  const active = formButtons(screen).map((b, i) => b.classList.contains('active') ? i : -1).filter(i => i >= 0);
+  const sigs = {};
+  screen.querySelectorAll('canvas.sig-canvas').forEach(c => {
+    const url = getSigDataURL(c.id);
+    if (url) sigs[c.id] = url;
+  });
+  const photos = photoStore[PHOTO_PREFIX[currentForm]] || [];
+
+  const key = DRAFT_PREFIX + currentForm;
+  const empty = !Object.keys(fields).length && !hasParts && !active.length && !Object.keys(sigs).length && !photos.length;
+  if (empty) { store(key, null); return; }
+
+  const draft = {
+    savedAt: Date.now(),
+    doors: currentForm === 'service' ? doorCount : 0,
+    fields, parts, active, sigs, photos
+  };
+  // Photos are large; if the phone's storage is full, keep the draft without them
+  if (!store(key, draft)) { draft.photos = []; store(key, draft); }
+}
+
+function queueDraftSave() {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(saveDraft, 600);
+}
+['input', 'change', 'click'].forEach(ev => document.addEventListener(ev, queueDraftSave));
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveDraft(); });
+window.addEventListener('pagehide', saveDraft);
+
+function restoreDraft(formType) {
+  const key = DRAFT_PREFIX + formType;
+  const d = load(key);
+  if (!d) return;
+  if (!d.savedAt || Date.now() - d.savedAt > DRAFT_MAX_AGE) { store(key, null); return; }
+
+  const when = new Date(d.savedAt).toLocaleString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+  if (!confirm(`You have an unfinished ${FORM_NAMES[formType]} from ${when}.\n\nPress OK to carry on with it, or Cancel to start a new one.`)) {
+    store(key, null);
+    return;
+  }
+
+  const screen = document.getElementById('screen-' + formType);
+  if (formType === 'service') {
+    for (let i = 1; i < d.doors; i++) addDoor();
+  }
+  Object.entries(d.parts || {}).forEach(([id, rows]) => {
+    const tb = document.getElementById(id);
+    if (!tb) return;
+    while (tb.children.length < rows.length) addPartsRow(id);
+    rows.forEach((vals, r) => tb.children[r].querySelectorAll('input').forEach((inp, c) => { inp.value = vals[c] || ''; }));
+  });
+  Object.entries(d.fields || {}).forEach(([id, val]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.value = val;
+    if (el.classList.contains('f-textarea')) autoGrow(el);
+  });
+  // Re-tap the Yes/No, rating, pass/fail and follow-up buttons that were selected
+  const btns = formButtons(screen);
+  (d.active || []).forEach(i => { if (btns[i]) btns[i].click(); });
+  Object.entries(d.sigs || {}).forEach(([id, url]) => {
+    const pad = sigPads[id];
+    if (!pad) return;
+    pad.fromDataURL(url);
+    const ph = document.getElementById(id).parentElement.querySelector('.sig-label-inner');
+    if (ph) ph.style.display = 'none';
+  });
+  const prefix = PHOTO_PREFIX[formType];
+  if (d.photos && d.photos.length) {
+    photoStore[prefix] = d.photos.slice(0, MAX_PHOTOS);
+    renderPhotoGrid(prefix);
+  }
+  if (formType === 'service') switchDoor(document.querySelector('.door-panel').id.replace('door-panel-', ''));
+  showToast('Unfinished form restored');
+}
+
+// ── Site name suggestions from the site folders already in Google Drive ──
+const SITE_LISTS = { service: 's-site-list', worksheet: 'w-site-list', commissioning: 'c-site-list' };
+
+function fillSiteLists(sites) {
+  Object.entries(SITE_LISTS).forEach(([form, id]) => {
+    const dl = document.getElementById(id);
+    if (!dl) return;
+    dl.innerHTML = '';
+    (sites[form] || []).forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      dl.appendChild(opt);
+    });
+  });
+}
+
+async function loadSiteNames() {
+  const cached = load(SITES_KEY);
+  if (cached) fillSiteLists(cached); // works offline with the last list we got
+  if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL === 'YOUR_APPS_SCRIPT_URL_HERE') return;
+  try {
+    const resp = await fetch(APPS_SCRIPT_URL + '?action=sites');
+    const result = await resp.json();
+    if (result.sites) {
+      fillSiteLists(result.sites);
+      store(SITES_KEY, result.sites);
+    }
+  } catch (e) {
+    console.warn('Could not load site list:', e);
+  }
+}
+
+restoreStaff();
+loadSiteNames();
 
 function downloadLastPDF() {
   if (!lastPdfBlob || !lastPdfName) return;
