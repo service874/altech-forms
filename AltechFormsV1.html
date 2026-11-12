@@ -551,6 +551,18 @@
     transition: all 0.15s;
   }
   .photo-upload-btn:active { background: #e4e9f4; }
+  .outbox-banner {
+    display: flex; align-items: center; gap: 12px;
+    background: #fff4e5; border: 1.5px solid #e67e22; border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 16px;
+    font-size: 14px; line-height: 1.4; color: #7a4a0a;
+  }
+  .outbox-text { flex: 1; }
+  .outbox-btn {
+    flex-shrink: 0; background: #e67e22; color: white; border: none; border-radius: 7px;
+    padding: 10px 14px; font-family: 'Barlow', sans-serif; font-weight: 700; font-size: 13px; cursor: pointer;
+  }
+  .outbox-btn:disabled { opacity: 0.6; }
   .photo-btn-row { display: flex; gap: 10px; }
   .f-input.f-missing { border-color: var(--red); box-shadow: 0 0 0 3px rgba(192,57,43,0.15); }
   .photo-btn-row .photo-upload-btn { flex: 1; padding: 14px 8px; font-size: 14px; gap: 6px; }
@@ -800,6 +812,10 @@
     </div>
   </div>
   <div class="home-wrap">
+    <div class="outbox-banner" id="outbox-banner" style="display:none;">
+      <div class="outbox-text" id="outbox-text"></div>
+      <button class="outbox-btn" id="outbox-btn" onclick="flushOutbox(true)">Send now</button>
+    </div>
     <div class="staff-section">
       <div class="section-label">👤 Select Technician</div>
       <select class="staff-select" id="staff-select" onchange="onStaffSelect()">
@@ -1128,8 +1144,8 @@
   </div>
   <div class="success-wrap">
     <div class="success-icon">✓</div>
-    <div class="success-title">Form Submitted!</div>
-    <div class="success-msg">Your form has been saved and a PDF has been sent to the admin team.</div>
+    <div class="success-title" id="success-title">Form Submitted!</div>
+    <div class="success-msg" id="success-msg">Your form has been saved and a PDF has been sent to the admin team.</div>
     <div class="success-details" id="success-details"></div>
     <button class="new-form-btn" onclick="goHome()">← Back to Forms</button>
     <button class="another-btn" onclick="downloadLastPDF()">⬇ Download PDF Copy</button>
@@ -2262,12 +2278,7 @@ async function submitForm(formType) {
 
   try {
     let doc, siteName;
-    const formTitles = {
-      service: 'Service Sheet',
-      worksheet: 'Worksheet',
-      commissioning: 'Commissioning Checklist',
-    };
-    const formTitle = formTitles[formType];
+    const formTitle = FORM_NAMES[formType];
 
     if (formType === 'service') {
       doc = buildServicePDF(); siteName = v('s-site-name') || 'Unknown Site';
@@ -2284,38 +2295,36 @@ async function submitForm(formType) {
     lastPdfBlob = doc.output('blob');
     lastPdfName = filename;
 
-    // Convert PDF to base64 for sending
-    const pdfBase64 = doc.output('datauristring').split(',')[1];
-
     let driveUrl = '';
     let drivePath = '';
     let emailSent = false;
+    let queued = false;
+    const configured = APPS_SCRIPT_URL && APPS_SCRIPT_URL !== 'YOUR_APPS_SCRIPT_URL_HERE';
 
     // ── Send to Apps Script backend ──
-    if (APPS_SCRIPT_URL && APPS_SCRIPT_URL !== 'YOUR_APPS_SCRIPT_URL_HERE') {
+    if (configured) {
       btn.textContent = '📤 Sending to admin…';
+      const payload = {
+        id: newSubmissionId(),
+        pdf: doc.output('datauristring').split(',')[1],
+        filename: filename,
+        formType: formTitle,
+        workType: formType === 'worksheet' ? v('w-worktype') : '',
+        technician: currentStaff,
+        siteName: siteName,
+        submittedAt: new Date().toISOString(),
+        details: jobLogDetails(formType)
+      };
       try {
-        const payload = {
-          pdf: pdfBase64,
-          filename: filename,
-          formType: formTitle,
-          workType: formType === 'worksheet' ? v('w-worktype') : '',
-          technician: currentStaff,
-          siteName: siteName,
-          submittedAt: new Date().toISOString()
-        };
-        const resp = await fetch(APPS_SCRIPT_URL, {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        });
-        const result = await resp.json();
-        if (result.success) {
-          emailSent = true;
-          driveUrl = result.driveUrl || '';
-          drivePath = result.folderPath || '';
-        }
-      } catch (fetchErr) {
-        console.warn('Backend send failed, falling back to local download:', fetchErr);
+        const result = await sendToBackend(payload);
+        emailSent = true;
+        driveUrl = result.driveUrl || '';
+        drivePath = result.folderPath || '';
+      } catch (sendErr) {
+        console.warn('Send failed, keeping the form to send later:', sendErr);
+        // No signal (or the server had a problem): keep it on the phone and send it later
+        queued = await outboxAdd(payload);
+        refreshOutboxBanner();
       }
     }
 
@@ -2325,10 +2334,17 @@ async function submitForm(formType) {
     // ── Success screen ──
     const emailStatus = emailSent
       ? `<span style="color:#27ae60;">✓ Emailed to admin@altechautodoors.com</span><br><span style="color:#27ae60;">✓ Saved to Google Drive${drivePath ? ' — ' + drivePath : ''}</span>`
-      : APPS_SCRIPT_URL === 'YOUR_APPS_SCRIPT_URL_HERE'
-        ? `<span style="color:#e67e22;">⚠ Apps Script URL not configured yet — PDF downloaded locally</span>`
-        : `<span style="color:#e74c3c;">⚠ Could not reach server — PDF downloaded locally as backup</span>`;
+      : queued
+        ? `<span style="color:#e67e22;">⏳ No connection — this form is saved on the phone and will send by itself when you're back online. Just open the app again later.</span>`
+        : !configured
+          ? `<span style="color:#e67e22;">⚠ Apps Script URL not configured yet — PDF downloaded locally</span>`
+          : `<span style="color:#e74c3c;">⚠ Could not send — PDF downloaded locally as backup. Your form is still filled in, so please submit it again later.</span>`;
 
+    document.getElementById('success-title').textContent = emailSent ? 'Form Submitted!' : queued ? 'Saved — Will Send Later' : 'Not Sent Yet';
+    document.getElementById('success-msg').textContent = emailSent
+      ? 'Your form has been saved and a PDF has been sent to the admin team.'
+      : queued ? 'Nothing more to do. The form will be sent to the admin team automatically.'
+      : 'The PDF was saved to this device only.';
     document.getElementById('success-details').innerHTML = `
       <strong>Form:</strong> ${formTitle}<br>
       <strong>Technician:</strong> ${currentStaff}<br>
@@ -2339,8 +2355,8 @@ async function submitForm(formType) {
       <span style="color:#27ae60;">✓ PDF saved to this device</span>
       ${driveUrl ? `<br><a href="${driveUrl}" target="_blank" style="color:#1a2a4a;font-size:13px;">📁 Open in Google Drive →</a>` : ''}
     `;
-    if (emailSent) {
-      // Sent safely, so the saved draft is no longer needed
+    if (emailSent || queued) {
+      // Sent (or safely waiting to send), so the saved draft is no longer needed
       clearTimeout(draftTimer);
       store(DRAFT_PREFIX + formType, null);
       formSent = true;
@@ -2355,6 +2371,132 @@ async function submitForm(formType) {
   btn.classList.remove('loading');
   btn.textContent = '📤 Submit & Send PDF';
 }
+
+// ══════════════════════════════════════════
+// SENDING + SEND LATER
+// ══════════════════════════════════════════
+const SEND_TIMEOUT = 90 * 1000;
+
+function newSubmissionId() {
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+}
+
+// Throws if the form did not reach the server, so the caller can keep it for later
+async function sendToBackend(payload) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), SEND_TIMEOUT);
+  try {
+    const resp = await fetch(APPS_SCRIPT_URL, { method: 'POST', body: JSON.stringify(payload), signal: ctrl.signal });
+    const result = await resp.json();
+    if (!result.success) throw new Error(result.error || 'Server could not save the form');
+    return result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Extra details for the admin job log spreadsheet
+function jobLogDetails(formType) {
+  const yn = val => val === 'yes' ? 'Yes' : val === 'no' ? 'No' : '';
+  if (formType === 'service') {
+    const doors = getDoorData();
+    const pass = doors.filter(d => d.status === 'pass').length;
+    const fail = doors.filter(d => d.status === 'fail').length;
+    const bits = [`${doors.length} door${doors.length === 1 ? '' : 's'}`];
+    if (pass) bits.push(`${pass} pass`);
+    if (fail) bits.push(`${fail} FAIL`);
+    return {
+      jobComplete: yn(state['s-job-complete']),
+      followUp: yn(state['s-followup']),
+      followUpType: state['s-followup'] === 'yes'
+        ? [...document.querySelectorAll('#followup-chips-wrap .chip.active')].map(c => c.textContent).join(', ') : '',
+      doors: bits.join(', ')
+    };
+  }
+  if (formType === 'worksheet') {
+    return { orderNo: v('w-order'), quoteNeeded: yn(state['w-quote']) || 'No', notes: state['w-quote'] === 'yes' ? v('w-quote-notes') : '' };
+  }
+  return { orderNo: v('c-order') };
+}
+
+// ── Outbox: forms that could not be sent are kept on the phone (IndexedDB,
+//    which has room for PDFs with photos) and sent when there is signal again ──
+let outboxDb = null;
+let outboxBusy = false;
+
+function outboxOpen() {
+  if (outboxDb) return Promise.resolve(outboxDb);
+  return new Promise((resolve, reject) => {
+    let req;
+    try { req = indexedDB.open('altech-outbox', 1); } catch (e) { reject(e); return; }
+    req.onupgradeneeded = () => req.result.createObjectStore('forms', { keyPath: 'id' });
+    req.onsuccess = () => { outboxDb = req.result; resolve(outboxDb); };
+    req.onerror = () => reject(req.error);
+  });
+}
+function outboxRun(mode, fn) {
+  return outboxOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction('forms', mode);
+    const req = fn(tx.objectStore('forms'));
+    tx.oncomplete = () => resolve(req && req.result);
+    tx.onerror = tx.onabort = () => reject(tx.error);
+  }));
+}
+// Returns true once the form is safely stored
+async function outboxAdd(payload) {
+  try {
+    await outboxRun('readwrite', st => st.put({ id: payload.id, payload, queuedAt: Date.now() }));
+    return true;
+  } catch (e) {
+    console.warn('Could not store form for later:', e);
+    return false;
+  }
+}
+async function outboxAll() {
+  try { return (await outboxRun('readonly', st => st.getAll())) || []; } catch (e) { return []; }
+}
+
+async function refreshOutboxBanner(lastError) {
+  const items = await outboxAll();
+  const banner = document.getElementById('outbox-banner');
+  if (!items.length) { banner.style.display = 'none'; return; }
+  const names = items.map(i => `${i.payload.formType} — ${i.payload.siteName}`).join('; ');
+  document.getElementById('outbox-text').innerHTML =
+    `<strong>${items.length} form${items.length === 1 ? '' : 's'} waiting to send</strong><br>${names}` +
+    `<br><span style="font-size:12px;">${outboxBusy ? 'Sending now…' : lastError ? 'Still no luck — will keep trying.' : 'Will send automatically when you have signal.'}</span>`;
+  document.getElementById('outbox-btn').disabled = outboxBusy;
+  banner.style.display = 'flex';
+}
+
+// Try to send everything that is waiting. Safe to call as often as you like.
+async function flushOutbox(manual) {
+  if (outboxBusy) return;
+  const items = await outboxAll();
+  if (!items.length) return;
+  if (navigator.onLine === false) { if (manual) showToast('No connection yet', true); return; }
+  outboxBusy = true;
+  refreshOutboxBanner();
+  let sent = 0, failed = false;
+  for (const item of items.sort((a, b) => a.queuedAt - b.queuedAt)) {
+    try {
+      await sendToBackend(item.payload);
+      await outboxRun('readwrite', st => st.delete(item.id));
+      sent++;
+    } catch (e) {
+      console.warn('Still could not send', item.payload.filename, e);
+      failed = true;
+      break; // most likely still no signal, try again later
+    }
+  }
+  outboxBusy = false;
+  refreshOutboxBanner(failed);
+  if (sent) showToast(`✓ ${sent} saved form${sent === 1 ? '' : 's'} sent to admin`);
+  else if (manual && failed) showToast('Could not send yet — will keep trying', true);
+}
+
+window.addEventListener('online', () => flushOutbox());
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') flushOutbox(); });
+setInterval(flushOutbox, 60 * 1000);
 
 // ══════════════════════════════════════════
 // CHECKS BEFORE SUBMITTING
@@ -2575,6 +2717,8 @@ async function loadSiteNames() {
 
 restoreStaff();
 loadSiteNames();
+refreshOutboxBanner();
+flushOutbox();
 
 function downloadLastPDF() {
   if (!lastPdfBlob || !lastPdfName) return;
