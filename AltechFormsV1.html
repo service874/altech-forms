@@ -1626,8 +1626,23 @@ function dv(id) {
 // ══════════════════════════════════════════
 // PHOTOS
 // ══════════════════════════════════════════
-const photoStore = { s: [], w: [], c: [] };
+const photoStore = { s: [], w: [], c: [] };  // smaller copies used in the PDF
+const photoFull  = { s: [], w: [], c: [] };  // high-res copies saved to the Drive "Photos" folder
 const MAX_PHOTOS = 5;
+const PDF_PHOTO_DIM = 1200, PDF_PHOTO_QUALITY = 0.75;
+const FULL_PHOTO_DIM = 2560, FULL_PHOTO_QUALITY = 0.85;
+
+function scalePhoto(img, maxDim, quality) {
+  let w = img.width, h = img.height;
+  if (w > maxDim || h > maxDim) {
+    if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+    else { w = Math.round(w * maxDim / h); h = maxDim; }
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL('image/jpeg', quality);
+}
 
 function handlePhotos(prefix, input) {
   const files = Array.from(input.files);
@@ -1641,20 +1656,12 @@ function handlePhotos(prefix, input) {
   toAdd.forEach(file => {
     const reader = new FileReader();
     reader.onload = (e) => {
-      // Compress image
+      // A small copy for the PDF and a high-res copy for Drive
       const img = new Image();
       img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const MAX_DIM = 1200;
-        let w = img.width, h = img.height;
-        if (w > MAX_DIM || h > MAX_DIM) {
-          if (w > h) { h = Math.round(h * MAX_DIM / w); w = MAX_DIM; }
-          else { w = Math.round(w * MAX_DIM / h); h = MAX_DIM; }
-        }
-        canvas.width = w; canvas.height = h;
-        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-        const compressed = canvas.toDataURL('image/jpeg', 0.75);
-        photoStore[prefix].push(compressed);
+        if (photoStore[prefix].length >= MAX_PHOTOS) return;
+        photoStore[prefix].push(scalePhoto(img, PDF_PHOTO_DIM, PDF_PHOTO_QUALITY));
+        photoFull[prefix].push(scalePhoto(img, FULL_PHOTO_DIM, FULL_PHOTO_QUALITY));
         renderPhotoGrid(prefix);
       };
       img.onerror = () => showToast('Could not read that photo. Please try another.', true);
@@ -1676,11 +1683,28 @@ function renderPhotoGrid(prefix) {
     </div>`).join('');
   count.textContent = photos.length > 0 ? `${photos.length} / ${MAX_PHOTOS} photos` : '';
   queueDraftSave();
+  saveFullPhotos(prefix);
 }
 
 function removePhoto(prefix, idx) {
   photoStore[prefix].splice(idx, 1);
+  photoFull[prefix].splice(idx, 1);
   renderPhotoGrid(prefix);
+}
+
+// The high-res copies are too big for the normal draft, so they are kept
+// on the phone separately (with the small copies, to check they still match)
+function saveFullPhotos(prefix) {
+  const small = photoStore[prefix].slice(), full = photoFull[prefix].slice();
+  dbRun('photos', 'readwrite', st => small.length ? st.put({ small, full }, prefix) : st.delete(prefix))
+    .catch(e => console.warn('Could not keep high-res photos:', e));
+}
+async function loadFullPhotos(prefix, small) {
+  try {
+    const saved = await dbRun('photos', 'readonly', st => st.get(prefix));
+    if (saved && saved.small && saved.small.length === small.length && saved.small.every((x, i) => x === small[i])) return saved.full;
+  } catch (e) { console.warn('Could not load high-res photos:', e); }
+  return small.slice(); // fall back to the PDF-size copies
 }
 
 // ══════════════════════════════════════════
@@ -2313,7 +2337,8 @@ async function submitForm(formType) {
         technician: currentStaff,
         siteName: siteName,
         submittedAt: new Date().toISOString(),
-        details: jobLogDetails(formType)
+        details: jobLogDetails(formType),
+        photos: photoFull[PHOTO_PREFIX[formType]].map(u => u.split(',')[1])
       };
       try {
         const result = await sendToBackend(payload);
@@ -2359,6 +2384,8 @@ async function submitForm(formType) {
       // Sent (or safely waiting to send), so the saved draft is no longer needed
       clearTimeout(draftTimer);
       store(DRAFT_PREFIX + formType, null);
+      photoStore[PHOTO_PREFIX[formType]] = []; photoFull[PHOTO_PREFIX[formType]] = [];
+      saveFullPhotos(PHOTO_PREFIX[formType]);
       formSent = true;
     }
     showScreen('screen-success');
@@ -2375,7 +2402,7 @@ async function submitForm(formType) {
 // ══════════════════════════════════════════
 // SENDING + SEND LATER
 // ══════════════════════════════════════════
-const SEND_TIMEOUT = 90 * 1000;
+const SEND_TIMEOUT = 180 * 1000; // forms with high-res photos can take a while on weak signal
 
 function newSubmissionId() {
   return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
@@ -2428,16 +2455,21 @@ function outboxOpen() {
   if (outboxDb) return Promise.resolve(outboxDb);
   return new Promise((resolve, reject) => {
     let req;
-    try { req = indexedDB.open('altech-outbox', 1); } catch (e) { reject(e); return; }
-    req.onupgradeneeded = () => req.result.createObjectStore('forms', { keyPath: 'id' });
+    try { req = indexedDB.open('altech-outbox', 2); } catch (e) { reject(e); return; }
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('forms')) db.createObjectStore('forms', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('photos')) db.createObjectStore('photos');
+    };
     req.onsuccess = () => { outboxDb = req.result; resolve(outboxDb); };
     req.onerror = () => reject(req.error);
   });
 }
-function outboxRun(mode, fn) {
+function outboxRun(mode, fn) { return dbRun('forms', mode, fn); }
+function dbRun(storeName, mode, fn) {
   return outboxOpen().then(db => new Promise((resolve, reject) => {
-    const tx = db.transaction('forms', mode);
-    const req = fn(tx.objectStore('forms'));
+    const tx = db.transaction(storeName, mode);
+    const req = fn(tx.objectStore(storeName));
     tx.oncomplete = () => resolve(req && req.result);
     tx.onerror = tx.onabort = () => reject(tx.error);
   }));
@@ -2676,8 +2708,12 @@ function restoreDraft(formType) {
   });
   const prefix = PHOTO_PREFIX[formType];
   if (d.photos && d.photos.length) {
-    photoStore[prefix] = d.photos.slice(0, MAX_PHOTOS);
-    renderPhotoGrid(prefix);
+    const small = d.photos.slice(0, MAX_PHOTOS);
+    photoStore[prefix] = small;
+    photoFull[prefix] = small.slice();
+    loadFullPhotos(prefix, small).then(full => {
+      if (photoStore[prefix] === small) { photoFull[prefix] = full; renderPhotoGrid(prefix); }
+    });
   }
   if (formType === 'service') switchDoor(document.querySelector('.door-panel').id.replace('door-panel-', ''));
   showToast('Unfinished form restored');
